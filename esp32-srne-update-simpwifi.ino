@@ -2,6 +2,7 @@ const char compile_date[] = __DATE__;
 const char compile_time[] = __TIME__;
 
 #include <WiFi.h>
+//#include <time.h>
 #include <ESPAsyncWebServer.h>
 #include <Update.h>
 #include <ArduinoOTA.h>
@@ -15,19 +16,16 @@ const char compile_time[] = __TIME__;
 #include <ModbusMaster.h>
 #include "esp_task_wdt.h"
 #include <ESPmDNS.h>
-#include <vector>
-#include <stdio.h>
 #include "index_html.h"
 #include "script_js.h"
-//#include "mods_js.h"
-#include <ElegantOTA.h>
-#include <ArduinoJson.h>
+#include "esp_wifi.h"
+
 
 // Wi-Fi credentials
 const char* primarySSID = "freedom";
-const char* primaryPassword = "888888";
+const char* primaryPassword = "ontheroadagain!";
 const char* fallbackSSID = "littlesugar";
-const char* fallbackPassword = "8888888";
+const char* fallbackPassword = "netgearsucks!";
 
 // WiFi connection timing
 const unsigned long PRIMARY_CONNECT_TIME = 10000; // 10sec for primary network
@@ -35,6 +33,13 @@ const unsigned long FALLBACK_CONNECT_TIME = 20000; // 20sec minute for fallback 
 unsigned long wifiConnectStartMillis = 0;
 bool tryingPrimary = true; // Start by trying the primary network
 bool connectedToAnyNetwork = false;
+
+// // NTP stuff
+// WiFiUDP ntpUDP;
+// NTPClient timeClient(ntpUDP, "pool.ntp.org");
+// time_t lastSyncTime = 0;
+// const time_t SECONDS_IN_DAY = 86400;  // Seconds in one day
+
 
 // BLE
 BLEServer *pServer = NULL;
@@ -478,33 +483,6 @@ void writeModbusRegister(uint16_t address, float value, String& responseMessage)
     }
 }
 
-void onOTAStart() {
-    Serial.println("OTA update started");
-    otaProgress = true;
-    esp_task_wdt_deinit(); // Disable watchdog during OTA
-}
-
-void onOTAProgress(size_t progress, size_t total) {
-    Serial.printf("OTA Progress: %u%%\n", (progress / (total / 100)));
-}
-
-void onOTAEnd(bool success) {
-    Serial.println("\nOTA update finished");
-    if (success) {
-        Serial.println("Update Successful, rebooting...");
-    } else {
-        Serial.println("Update Failed!");
-    }
-    esp_task_wdt_config_t wdt_config = {
-        .timeout_ms = 120000,  // 2m timeout
-        .idle_core_mask = (1 << portNUM_PROCESSORS) - 1, // All cores
-        .trigger_panic = false  // Do not trigger panic on timeout, just warn
-    };
-    esp_task_wdt_init(&wdt_config); // Re-enable watchdog
-    esp_task_wdt_add(NULL);    
-    otaProgress = false;
-}
-
 //tracking and logging mem usage
 void saveMemoryData() {
     size_t freeHeap = ESP.getFreeHeap();
@@ -537,6 +515,133 @@ void saveMemoryData() {
     preferences.end();
     Serial.printf("Memory record saved: %s\n", record);
 }
+
+void handleFileUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
+  if(!index){
+    Serial.printf("Upload Start: %s\n", filename.c_str());
+    if(!SPIFFS.exists(filename)){
+      request->_tempFile = SPIFFS.open("/" + filename, "w");
+    } else {
+      request->_tempFile = SPIFFS.open("/" + filename, "a");
+    }
+  }
+  if(len){
+    request->_tempFile.write(data, len);
+  }
+  if(final){
+    request->_tempFile.close();
+    Serial.printf("Upload End: %s, %u Bytes\n", filename.c_str(), index+len);
+  }
+}
+
+// Make size of files human readable
+String humanReadableSize(const size_t bytes) {
+  if (bytes < 1024) return String(bytes) + " B";
+  else if (bytes < (1024 * 1024)) return String(bytes / 1024.0) + " KB";
+  else if (bytes < (1024 * 1024 * 1024)) return String(bytes / 1024.0 / 1024.0) + " MB";
+  else return String(bytes / 1024.0 / 1024.0 / 1024.0) + " GB";
+}
+
+// list all of the files, if ishtml=true, return html rather than simple text
+String listFiles(bool ishtml) {
+  String returnText = "";
+  Serial.println("Listing files stored on SPIFFS");
+  File root = SPIFFS.open("/");
+  File foundfile = root.openNextFile();
+  
+  if (ishtml) {
+    returnText += "<table><tr><th align='left'>Name</th><th align='left'>Size</th><th align='left'>Modified</th></tr>";
+  }
+  
+  while (foundfile) {
+    if (ishtml) {
+      returnText += "<tr align='left'>";
+      returnText += "<td>" + String(foundfile.name()) + "</td>";
+      returnText += "<td>" + humanReadableSize(foundfile.size()) + "</td>";
+      returnText += "<td>" + getDateTime(foundfile) + "</td>";
+      returnText += "</tr>";
+    } else {
+      returnText += "File: " + String(foundfile.name()) + ", Size: " + humanReadableSize(foundfile.size()) + ", Modified: " + getDateTime(foundfile) + "\n";
+    }
+    foundfile = root.openNextFile();
+  }
+  
+  if (ishtml) {
+    returnText += "</table>";
+  }
+  
+  root.close();
+  foundfile.close();
+  return returnText;
+}
+
+// Helper function to get human-readable date and time
+String getDateTime(File file) {
+    time_t now;
+    struct tm info;
+    char buf[32];
+
+    time(&now);
+    localtime_r(&now, &info); // Get local time
+
+    // Get file modification time
+    time_t modTime = file.getLastWrite();
+    localtime_r(&modTime, &info);
+
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &info);
+    return String(buf);
+}
+
+// void syncTime() {
+//   // Force an update from NTP
+//   timeClient.update();
+  
+//   time_t now;
+//   struct tm timeinfo;
+  
+//   if(!getLocalTime(&timeinfo)) {
+//     Serial.println("Failed to obtain time");
+//     return;
+//   }
+  
+//   time(&now);  // Get current time
+  
+//   // Apply the new time to the system
+//   Serial.print("Current local time: ");
+//   Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+  
+//   // This ensures the system time is updated
+//   struct timeval tv = {now, 0};
+//   settimeofday(&tv, NULL);
+// }
+
+// // Simplified Daylight Saving Time check for Central Time Zone
+// bool isDaylightSaving() {
+//   time_t now;
+//   time(&now);
+//   struct tm timeinfo;
+//   localtime_r(&now, &timeinfo);
+  
+//   int month = timeinfo.tm_mon + 1; // tm_mon is 0-11, so we add 1
+//   int day = timeinfo.tm_mday;
+//   int dayOfWeek = timeinfo.tm_wday; // Sunday is 0
+
+//   if (month < 3 || month > 11) return false; // No DST in January, February, December
+//   if (month > 3 && month < 11) return true; // DST in April through October
+
+//   // In March, check if it's after the second Sunday
+//   if (month == 3) {
+//     int firstSunday = 14 - dayOfWeek; // First Sunday in March
+//     return day > firstSunday;
+//   }
+
+//   // In November, check if it's before the first Sunday
+//   if (month == 11) {
+//     int firstSunday = 7 - dayOfWeek; // First Sunday in November
+//     return day < firstSunday;
+//   }
+//   return false;
+// }
 
 void setup() {
   Serial.begin(115200);
@@ -579,6 +684,7 @@ void setup() {
   preferences.end();
 
   WiFi.mode(WIFI_STA);
+  esp_wifi_set_ps(WIFI_PS_NONE);
   WiFi.begin(primarySSID, primaryPassword);
   wifiConnectStartMillis = millis();
   Serial.println("Connecting to primary WiFi...");
@@ -603,6 +709,13 @@ void setup() {
     Serial.println(WiFi.localIP());
     connectedToAnyNetwork = true;
 
+    // //NTP Setup and initial sync
+    // configTime(0, 0, "pool.ntp.org"); // This will sync time once its called
+    // setenv("TZ", "CST6CDT,M3.2.0,M11.1.0", 1); // Set timezone for Central Time with DST rules
+    // tzset(); // Apply the timezone setting
+    // // Initial sync
+    // syncTime();
+
     // Initiate mDNS here since we've confirmed WiFi connection
     if (!MDNS.begin(currentBLEName.c_str())) {    
       Serial.println("Error setting up MDNS responder!");
@@ -614,6 +727,7 @@ void setup() {
     Serial.println("\nFailed to connect to any WiFi network.");
     connectedToAnyNetwork = false;
   }
+
   ArduinoOTA.setHostname(currentBLEName.c_str());
   ArduinoOTA.setPassword("ota-7279");
 
@@ -699,12 +813,35 @@ void setup() {
       request->send_P(200, "text/html", index_html);
   });
 
-  server.on("/script.js", HTTP_GET, [](AsyncWebServerRequest *request){
-      request->send_P(200, "application/javascript", script_js);
-  });
 
-  // server.on("/mods.js", HTTP_GET, [](AsyncWebServerRequest *request){
-  //     request->send_P(200, "application/javascript", mods_js);
+  server.on("/script.js", HTTP_GET, [](AsyncWebServerRequest *request) {
+      AsyncWebServerResponse *response = request->beginChunkedResponse("text/javascript", [](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+          // Copy data into the buffer from PROGMEM
+          size_t len = strlen_P(script_js);
+          if (index >= len) {
+              return 0; // No more data to send
+          }
+          size_t chunkSize = min(maxLen, len - index);
+          memcpy_P((void*)buffer, script_js + index, chunkSize);
+          return chunkSize;
+      });
+      response->addHeader("Cache-Control", "no-cache"); // Optional, adjust as needed
+      request->send(response);
+  });
+  // server.on("/script.js", HTTP_GET, [](AsyncWebServerRequest *request){
+  //     request->send_P(200, "text/javascript", script_js);
+  // });
+  // server.on("/script.js", HTTP_GET, [](AsyncWebServerRequest *request){
+  //     File file = SPIFFS.open("/script.js", "r");
+  //     if(file){
+  //         AsyncWebServerResponse *response = request->beginResponse(SPIFFS, "/script.js", "text/javascript");
+  //         // Set max content length to something larger than your script.js file size
+  //         response->setContentLength(file.size()); // This effectively sets maxContentLength to the file size
+  //         request->send(response);
+  //         file.close();
+  //     } else {
+  //         request->send(404, "text/plain", "File not found");
+  //     }
   // });
 
   server.on("/get_blename", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -1038,12 +1175,19 @@ server.on("/update_registers", HTTP_POST, [](AsyncWebServerRequest *request){
       request->send(200, "text/plain", response);
   });
 
-  // Start webOTA
-  ElegantOTA.begin(&server);    // Start ElegantOTA
-  // ElegantOTA callbacks
-  ElegantOTA.onStart(onOTAStart);
-  ElegantOTA.onProgress(onOTAProgress);
-  ElegantOTA.onEnd(onOTAEnd);
+  server.on("/files", HTTP_GET, [](AsyncWebServerRequest *request){
+      String html = "<!DOCTYPE HTML><html lang='en'><head><meta name='viewport' content='width=device-width, initial-scale=1'><meta charset='UTF-8'></head><body>";
+      html += "<h1>Files on SPIFFS</h1>";
+      html += "<p>Free Storage: " + humanReadableSize((SPIFFS.totalBytes() - SPIFFS.usedBytes())) + " | Used Storage: " + humanReadableSize(SPIFFS.usedBytes()) + " | Total Storage: " + humanReadableSize(SPIFFS.totalBytes()) + "</p>";
+      html += listFiles(true);
+      html += "</body></html>";
+      request->send(200, "text/html", html);
+  });
+
+  server.on("/upfile", HTTP_POST, [](AsyncWebServerRequest *request){
+      request->send(200, "text/plain", "File Upload Successful");
+  }, handleFileUpload);
+
   server.begin();
   Serial.println("HTTP server started");
 }
@@ -1172,4 +1316,14 @@ void loop() {
     }
     
     esp_task_wdt_reset();
+    
+    // //NTP
+    // time_t now;
+    // time(&now);
+    
+    // if (difftime(now, lastSyncTime) >= SECONDS_IN_DAY) {
+    //   syncTime();
+    //   lastSyncTime = now;
+    // }
+    delay(100); // Small delay to prevent watchdog timer issues
 }
