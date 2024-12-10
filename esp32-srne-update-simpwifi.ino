@@ -23,9 +23,9 @@ const char compile_time[] = __TIME__;
 
 // Wi-Fi credentials
 const char* primarySSID = "freedom";
-const char* primaryPassword = "ontheroadagain!";
+const char* primaryPassword = "888888";
 const char* fallbackSSID = "littlesugar";
-const char* fallbackPassword = "netgearsucks!";
+const char* fallbackPassword = "8888888";
 
 // WiFi connection timing
 const unsigned long PRIMARY_CONNECT_TIME = 10000; // 10sec for primary network
