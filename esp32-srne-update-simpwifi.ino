@@ -23,13 +23,13 @@ const char compile_time[] = __TIME__;
 
 // Wi-Fi credentials
 const char* primarySSID = "freedom";
-const char* primaryPassword = "888888";
+const char* primaryPassword = "ontheroadagain!";
 const char* fallbackSSID = "littlesugar";
-const char* fallbackPassword = "8888888";
+const char* fallbackPassword = "netgearsucks!";
 
 // WiFi connection timing
-const unsigned long PRIMARY_CONNECT_TIME = 10000; // 10sec for primary network
-const unsigned long FALLBACK_CONNECT_TIME = 20000; // 20sec minute for fallback network
+const unsigned long PRIMARY_CONNECT_TIME = 20000; // 20sec for primary network
+const unsigned long FALLBACK_CONNECT_TIME = 10000; // 10sec for fallback network
 unsigned long wifiConnectStartMillis = 0;
 bool tryingPrimary = true; // Start by trying the primary network
 bool connectedToAnyNetwork = false;
@@ -684,20 +684,25 @@ void setup() {
   preferences.end();
 
   WiFi.mode(WIFI_STA);
-  esp_wifi_set_ps(WIFI_PS_NONE);
+  esp_wifi_set_ps(WIFI_PS_NONE); // Disable power save mode for WiFi
+
+  // Attempt primary WiFi connection
   WiFi.begin(primarySSID, primaryPassword);
   wifiConnectStartMillis = millis();
   Serial.println("Connecting to primary WiFi...");
-  while (WiFi.status() != WL_CONNECTED) {
+  unsigned long primaryAttemptEnd = millis() + PRIMARY_CONNECT_TIME;
+
+  while (WiFi.status() != WL_CONNECTED && millis() < primaryAttemptEnd) {
     delay(1000);
     Serial.print(".");
   }
 
-  // Here you might want to check if primary failed and attempt fallback:
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("\nPrimary WiFi connection failed, trying fallback...");
     WiFi.begin(fallbackSSID, fallbackPassword);
-    while (WiFi.status() != WL_CONNECTED) {
+    unsigned long fallbackAttemptEnd = millis() + FALLBACK_CONNECT_TIME;
+    
+    while (WiFi.status() != WL_CONNECTED && millis() < fallbackAttemptEnd) {
       delay(1000);
       Serial.print(".");
     }
@@ -708,15 +713,8 @@ void setup() {
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
     connectedToAnyNetwork = true;
-
-    // //NTP Setup and initial sync
-    // configTime(0, 0, "pool.ntp.org"); // This will sync time once its called
-    // setenv("TZ", "CST6CDT,M3.2.0,M11.1.0", 1); // Set timezone for Central Time with DST rules
-    // tzset(); // Apply the timezone setting
-    // // Initial sync
-    // syncTime();
-
-    // Initiate mDNS here since we've confirmed WiFi connection
+    tryingPrimary = WiFi.SSID() == primarySSID; // Determine if we are on primary or fallback
+        // Initiate mDNS here since we've confirmed WiFi connection
     if (!MDNS.begin(currentBLEName.c_str())) {    
       Serial.println("Error setting up MDNS responder!");
     } else {
@@ -726,7 +724,15 @@ void setup() {
   } else {
     Serial.println("\nFailed to connect to any WiFi network.");
     connectedToAnyNetwork = false;
+    tryingPrimary = true;  // Reset to attempt primary next time
   }
+
+    // //NTP Setup and initial sync
+    // configTime(0, 0, "pool.ntp.org"); // This will sync time once its called
+    // setenv("TZ", "CST6CDT,M3.2.0,M11.1.0", 1); // Set timezone for Central Time with DST rules
+    // tzset(); // Apply the timezone setting
+    // // Initial sync
+    // syncTime();
 
   ArduinoOTA.setHostname(currentBLEName.c_str());
   ArduinoOTA.setPassword("ota-7279");
@@ -1201,52 +1207,61 @@ void loop() {
     }
     ArduinoOTA.handle(); // Handle OTA updates
 
-    if (connectedToAnyNetwork) {
-        if (WiFi.status() != WL_CONNECTED) {
-            Serial.println("WiFi Connection Lost. Attempting to reconnect...");
-            WiFi.reconnect();  // Try to reconnect to the last connected network
-            connectedToAnyNetwork = false;
-            wifiConnectStartMillis = millis(); // Reset the timer for connection attempts
-            tryingPrimary = true;  // Assuming you want to start with primary again
-        }
-    } else {
-        unsigned long currentMillis = millis();
-        if (currentMillis - wifiConnectStartMillis >= (tryingPrimary ? PRIMARY_CONNECT_TIME : FALLBACK_CONNECT_TIME)) {
-            if (tryingPrimary) {
-                Serial.println("\nSwitching to fallback WiFi...");
-                WiFi.begin(fallbackSSID, fallbackPassword);
-                tryingPrimary = false;
-            } else {
-                Serial.println("\nSwitching back to primary WiFi...");
-                WiFi.begin(primarySSID, primaryPassword);
-                tryingPrimary = true;
-            }
-            wifiConnectStartMillis = currentMillis; // Reset timer for new connection attempt
-        }
-
-        // Print dots while trying to connect
-        static unsigned long lastPrint = 0;
-        if (currentMillis - lastPrint > 500) {
-            Serial.print(".");
-            lastPrint = currentMillis;
-        }
-
-        // Check if connected and update status
-        if (WiFi.status() == WL_CONNECTED) {
-            Serial.println("\nConnected to WiFi!");
-            connectedToAnyNetwork = true;
-            Serial.print("IP address: ");
-            Serial.println(WiFi.localIP());
-            // Reinitialize mDNS when WiFi connection is confirmed
-            MDNS.end(); // Ensure to stop any ongoing mDNS service
-            if (!MDNS.begin(currentBLEName.c_str())) {
-                Serial.println("Error setting up MDNS responder on reconnect!");
-            } else {
-                Serial.println("mDNS responder re-started");
-                MDNS.addService("ble", "tcp", 0);
-            }
-        }
+  if (!connectedToAnyNetwork) {
+    unsigned long currentMillis = millis();
+    if (currentMillis - wifiConnectStartMillis >= (tryingPrimary ? PRIMARY_CONNECT_TIME : FALLBACK_CONNECT_TIME)) {
+      // Switch network if the current connection attempt has timed out
+      if (tryingPrimary) {
+        Serial.println("\nSwitching to fallback WiFi...");
+        WiFi.begin(fallbackSSID, fallbackPassword);
+        tryingPrimary = false;
+      } else {
+        Serial.println("\nSwitching back to primary WiFi...");
+        WiFi.begin(primarySSID, primaryPassword);
+        tryingPrimary = true;
+      }
+      wifiConnectStartMillis = currentMillis; // Reset timer for new connection attempt
     }
+
+    // Check if connected and update status
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\nConnected to WiFi!");
+      connectedToAnyNetwork = true;
+        // Here, restart mDNS when WiFi connects
+        MDNS.end(); 
+        if (!MDNS.begin(currentBLEName.c_str())) {    
+            Serial.println("Error restarting MDNS responder!");
+        } else {
+            Serial.println("mDNS responder restarted");
+            MDNS.addService("ble", "tcp", 0);
+        }
+      if (tryingPrimary) {
+        Serial.println("Connected to primary network.");
+      } else {
+        Serial.println("Connected to fallback network.");
+      }
+      
+      // Print IP Address
+      Serial.print("IP address: ");
+      Serial.println(WiFi.localIP());
+    } else {
+      // Print dots while trying to connect
+      static unsigned long lastPrint = 0;
+      if (currentMillis - lastPrint > 500) {
+        Serial.print(".");
+        lastPrint = currentMillis;
+      }
+    }
+  } else {
+    // Check if we've lost connection
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("\nLost WiFi connection, restarting cycle...");
+      connectedToAnyNetwork = false;
+      tryingPrimary = true; // Start again with primary network
+      wifiConnectStartMillis = millis();
+      WiFi.begin(primarySSID, primaryPassword);
+    }
+  }
     esp_task_wdt_reset();
     
     // Modbus Reading every 30 seconds
