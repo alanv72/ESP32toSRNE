@@ -15,4 +15,4 @@ ESP32toSRNE interaction with modbus over wifi and ble
 Researching alternative method of using esphome in home asssistant with the local webserver functionality.
 Example working yaml.
 
-(rv-batt-sg5k.yaml)
+([rv-batt-sg5k.yaml](https://raw.githubusercontent.com/alanv72/ESP32toSRNE/refs/heads/main/rv-batt-sg5k.yaml))
